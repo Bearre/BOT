@@ -4,9 +4,10 @@
 # v1.0   Бот работает, принимает и отвечает на базовые сообщения
 # v1.1   Добавлена тестовая функция с запросом к сайту погоды
 # v1.2   Добавлена возможность взаимодействия с postgresql14
-# v1.2.1 Bugfix
 # v1.3   Регистрация без выдачи прав, /stop bot убийством процесса на хосте
-#
+# v1.3.1 Настроено взаимодействие с БД при регистрации нового пользователя, настроен запрос к БД на проверку существования пользователя
+# v1.4   Добавлено логирование
+# v1.4.1 Фикс бага с неверным вычислением PID процесса программы
 #
 #
 #
@@ -14,12 +15,11 @@
 #=================================================================
 #Добавить возможность создания пользователя в бд с нужными правами
 #Добавить выдачу прав на бота для пользователя при регистрации
-#Добавить возможность удаления пользователя бота
+#Добавить возможность удаления пользователя бота/бана/понижения прав
 #Добавить мониторинги графаны
-#Добавить возможность запуска с параметрами командной строки
-#Добавить возможнсть использования переменных окружения
-#Добавить логирование
-#Добавить лог ошибок отдельно
+#Добавить возможность запуска с параметрами командной строки ?
+#Добавить возможнсть использования переменных окружения ?
+#Настроить фильтрацию логов
 
 
 
@@ -37,9 +37,13 @@ import platform
 import logging
 import psycopg2
 
+
 TOKEN = '5449810276:AAGWm4kJ6FAWtNqZ2Y-VZxsPwEtSHXgWWGs'
-PID = str(os.system("lsof -t /LOGS/BOT/TG_BOT.log"))
 THIS_BOT_CHAT_ID = 800772053
+ADMIN = "800772053"
+BOT_ID = "5449810276"
+
+
 UserAgents = [
     'Mozilla/5.0 (Linux; U) Opera 6.02 [en]',
     'Mozilla/4.0 (compatible; MSIE 5.0; Windows NT 4.0) Opera 6.02 [en]',
@@ -70,6 +74,7 @@ UserAgents = [
     'Mozilla/4.0 (compatible; MSIE 5.0; Windows 98) Opera 6.01 [en]',
     'Mozilla/4.0 (compatible; MSIE 5.0; Windows 98) Opera 6.01 [de]'
 ]
+
 Proxies = [
     '203.30.191.202	80',
     '203.13.32.221	80',
@@ -84,18 +89,35 @@ Proxies = [
 ]
 
 
+#logging.basicConfig(
+#    level=logging.DEBUG,
+#    format="%(asctime)s - [%(levelname)s] - [%(color)s] - %(name)s - (%(filename)s).%(funcName)s(%(lineno)d) - %(message)s",
+#)
+
+logging.basicConfig(level=logging.WARNING,
+                    filename="/LOGS/BOT/TG_BOT.log",
+                    filemode="w",
+                    format="format=%(asctime)s - [%(levelname)s] - %(name)s - (%(filename)s).%(funcName)s(%(lineno)d) - %(message)s")
+
+
 try:
     BOT = aiogram.Bot(token=TOKEN,
                       connections_limit=10,
                       validate_token=True,
                       timeout=50,
                       )
-except Exception as ex:
-    print("Error while initializing BOT\n", ex)
-    if ex == 'aiogram.utils.exceptions.ValidationError':
-        print('ERROR IN TOKEN')
+except aiogram.utils.exceptions.ValidationError as ValidationError:
+    logging.critical(f'PROBABLY ERROR IN TOKEN: {ValidationError}')
+except Exception as INIT_BOT_EXCEPTION:
+    logging.critical(f"Error while initializing BOT: {INIT_BOT_EXCEPTION}")
+else:
+    logging.critical("CRITICAL ERROR WHILE START BOT")
+
+#Цепляем PID процесса программы
+PID = str(os.system("lsof -t /LOGS/BOT/TG_BOT.log"))
+
+
 DISPATCHER = aiogram.Dispatcher(BOT)
-logging.basicConfig(level=logging.INFO)
 MINIMAL_PY_VERSION = (3, 7)
 if sys.version_info < MINIMAL_PY_VERSION:
     raise RuntimeError('aiogram works only with Python {}+'.format('.'.join(map(str, MINIMAL_PY_VERSION))))
@@ -154,7 +176,7 @@ class SysInfo:
 async def get_help(message: aiogram.dispatcher.filters.Command) -> None:
     """ Команда /help дает описание допустимых команд """
 
-    print("DEBUG_MESSAGE_FROM_HELP")
+    logging.info("DEBUG_MESSAGE_FROM_HELP")
     await message.answer("Допустимые команды: \n "
                          "1) weather (CITY) \n "
                          "2) /система \n "
@@ -178,21 +200,20 @@ async def send_alert_message(message: aiogram.dispatcher.filters.Command) -> Non
 async def stop_bot(message: aiogram.dispatcher.filters.Command) -> None:
     """ Команда /stop останавливает бота """
 
-    await message.answer(f"DEBUG_MESSAGE_FROM_STOP_BOT, PID: {PID}, PID_TYPE: {type(PID)}")
+    logging.warning(f"DEBUG_MESSAGE_FROM_STOP_BOT, PID: {PID}, PID_TYPE: {type(PID)}")
     try:
         if BOT:
             await message.answer(f"Бот \n {await BOT.get_me()} \n будет отстановлен!")
+            logging.warning(f"Stopping BOT with pid {PID}")
             #await BOT.close()
             await os.system(f"kill -9 {PID}")
-            if not os.system(f"ps -ef | grep {PID}"):
-                await message.answer(f"Процесс {PID} успешно остановлен \n")
-                await message.answer("Бот остановлен")
-            else:
-                await message.answer(f"Процесс {PID} НЕ остановлен, проверьте на хосте и при необходимости остановите вручную")
+            if os.system(f"ps -ef | grep {PID}"):
+                logging.error(f"Процесс {PID} НЕ остановлен")
+                await message.answer(f"Процесс {PID} НЕ остановлен, при необходимости остановите вручную")
         else:
-            print("BOT STOPPED ALREADY")
-    except Exception as ex:
-        await message.answer(f"EXCEPTION {ex} OCCURED!!!")
+            logging.info("BOT STOPPED ALREADY")
+    except Exception as stop_bot_exception:
+        logging.error(f"ERROR WHILE STOPPING BOT: {stop_bot_exception}")
 
 
 # !!!!!! Подразумевается что при первом входе пользователя в бота, ему доступна только команда регистрации в нем, реализуем через проверку в обработчике сообщений !!!!!!!
@@ -201,13 +222,21 @@ async def registrating_user_for_tg_bot(message: aiogram.types.Message) -> None:
     """ Функция регистарции и выдачи прав новому пользователю. Записывает его информацию в таблицу в БД postgresql """
 
     # Пользователь должен создаваться только на БОЕВОЙ БД, для этого нужна дополнительная проверка
-    INSERT_NEW_USER_QUERY_WITH_DEFAULT_GRANTS = f"insert into bot_users (user_id,can_send_media_messages,can_send_other_messages,can_send_polls,can_add_web_page_prage_previews,can_change_info,can_invite_users,date_created) values ({message.from_user.id}, 'YES', 'NO', 'YES', 'NO', 'NO', 'NO', '2022-12-03' );"
-
+    INSERT_NEW_USER_QUERY_WITH_DEFAULT_GRANTS = f'''insert into bot_users (user_id,
+                                                                           can_send_media_messages,
+                                                                           can_send_other_messages,
+                                                                           can_send_polls,
+                                                                           can_add_web_page_prage_previews,
+                                                                           can_change_info,
+                                                                           can_invite_users,
+                                                                           date_created)
+                                                      values ({message.from_user.id}, 'YES', 'NO', 'YES', 'NO', 'NO', 'NO', '2022-12-03' );'''
 
     SELECT_USER_QUERY = f'SELECT user_id from bot_users where user_id = {message.from_user.id};'
     count = 0
     #SELECT_USER_QUERY = 'SELECT user_id from bot_users;'
-    print("DEBUG_MESSAGE_FROM_registrating_user_for_tg_bot")
+    logging.debug("DEBUG_MESSAGE_FROM_registrating_user_for_tg_bot")
+
     connection = connect_postgres('192.168.56.113')
     try:
         with connection.cursor() as cursor:
@@ -216,7 +245,7 @@ async def registrating_user_for_tg_bot(message: aiogram.types.Message) -> None:
             for is_user_in_allowed in cursor:
                 count += 1
                 await message.answer(f'{is_user_in_allowed}')
-                print("DEBUG AFTER SELECT ", is_user_in_allowed)
+                logging.debug("DEBUG AFTER SELECT ", is_user_in_allowed)
             # Если пользователя нет в таблице, т.e. нам вернули пустой кортеж
             try:
                 if count == 0:
@@ -247,9 +276,9 @@ async def registrating_user_for_tg_bot(message: aiogram.types.Message) -> None:
                                        f'Напиши /help чтобы увидеть команды')
                     count = 0
             except Exception as reg_INSERT_NEW_USER_QUERY_exception:
-                print(f"Ошибка при выполнени вставки значений в таблицу postgres.telegram_users: {reg_INSERT_NEW_USER_QUERY_exception}")
+                logging.error(f"Ошибка при выполнени вставки значений в таблицу postgres.telegram_users: {reg_INSERT_NEW_USER_QUERY_exception}")
     except Exception as reg_SELECT_USER_QUERY_exception:
-        print(f"Ошибка при выполнении запроса SELECT_USER: {reg_SELECT_USER_QUERY_exception}")
+        logging.error(f"Ошибка при выполнении запроса SELECT_USER или : {reg_SELECT_USER_QUERY_exception}")
     finally:
         connection.close()
 
@@ -296,8 +325,8 @@ def get_weather(where: aiogram.types.Message) -> str:
         pressure = data["main"]["pressure"]
         return f"Город: {city} \n" \
                f"Температура: {cur_weather}\nВлажность: {humidity}\n Давление: {pressure}\n "
-    except Exception as exc:
-        return f"Exception {exc} occurred!\n STATUS: {r.status_code}\n REQUEST: {where}"
+    except Exception as get_weather_requests_get:
+        logging.error(f"Error at func get_weather: {get_weather_requests_get} \n STATUS: {r.status_code}\n REQUEST: {where}")
 
 
 def get_primary_database_ip() -> str:
@@ -308,6 +337,7 @@ def connect_postgres(ip: str):
     """ Коннект к БД, возвращает обьект connection """
     DBNAME = 'postgres'
     HOST = ip
+    logging.debug(f"DEBUG MESSAGE FROM CONNECT_POSTGRES TO HOST {ip}")
     try:
         connection = psycopg2.connect(dbname=DBNAME,
                                 user='postgres',
@@ -315,25 +345,27 @@ def connect_postgres(ip: str):
                                 port='5432',
                                 host=HOST)
         return connection
-    except Exception as exception:
-        print(f"Ошибка соединения: {exception} ")
+    except Exception as connect_postgres_exception:
+        logging.error(f"Ошибка соединения с БД: {connect_postgres_exception} ")
     #finally:
     #    connection.close()
 
 
-@DISPATCHER.message_handler(
-    aiogram.dispatcher.filters.Command(['postgres'], ignore_case=True, ignore_mention=False, ignore_caption=True))
-async def connect_postgresdb(message: aiogram.dispatcher.filters.Command) -> None:
-    dbname = 'postgres'
-    host = '192.168.56.113'
-    try:
-        conn = psycopg2.connect(dbname=dbname, user='postgres', password='pg', host=host)
-        with conn.cursor() as cursor:
-            cursor.execute('SELECT datname, datistemplate, datallowconn, datconnlimit FROM pg_database;')
-            for row in cursor:
-                await message.answer(row)
-    except Exception as exception:
-        print(f"Ошибка при выполнении запроса: {exception}")
+
+
+#@DISPATCHER.message_handler(
+#    aiogram.dispatcher.filters.Command(['postgres'], ignore_case=True, ignore_mention=False, ignore_caption=True))
+#async def connect_postgresdb(message: aiogram.dispatcher.filters.Command) -> None:
+#    dbname = 'postgres'
+#    host = '192.168.56.113'
+#    try:
+#        conn = psycopg2.connect(dbname=dbname, user='postgres', password='pg', host=host)
+#        with conn.cursor() as cursor:
+#            cursor.execute('SELECT datname, datistemplate, datallowconn, datconnlimit FROM pg_database;')
+#            for row in cursor:
+#                await message.answer(row)
+#    except Exception as exception:
+#        print(f"Ошибка при выполнении запроса: {exception}")
 
 
 async def delete_chat_message(message: aiogram.types.Message):
@@ -341,4 +373,7 @@ async def delete_chat_message(message: aiogram.types.Message):
 
 
 if __name__ == '__main__':
-    aiogram.executor.start_polling(DISPATCHER, skip_updates=True)
+    try:
+    	aiogram.executor.start_polling(DISPATCHER, skip_updates=True)
+    except Exception as aiogram_executor_start_polling_exception:
+        logging.error(f"Error: {aiogram_executor_start_polling_exception}")
