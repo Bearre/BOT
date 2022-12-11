@@ -1,18 +1,9 @@
 #!/usr/bin/env python3
 
-#=================================================================
-# v1.0   Бот работает, принимает и отвечает на базовые сообщения
-# v1.1   Добавлена тестовая функция с запросом к сайту погоды
-# v1.2   Добавлена возможность взаимодействия с postgresql14
-# v1.3   Регистрация без выдачи прав, /stop bot убийством процесса на хосте
-# v1.3.1 Настроено взаимодействие с БД при регистрации нового пользователя, настроен запрос к БД на проверку существования пользователя
-# v1.4   Добавлено логирование
-# v1.4.1 Фикс бага с неверным вычислением PID процесса программы
-#
-#
-#
+
 #Текущие задачи:
 #=================================================================
+#Добавить обработку исключений при коннекте к БД в функициях коннекта и получения MASTER IP базы
 #Добавить возможность создания пользователя в бд с нужными правами
 #Добавить выдачу прав на бота для пользователя при регистрации
 #Добавить возможность удаления пользователя бота/бана/понижения прав
@@ -177,15 +168,15 @@ async def get_help(message: aiogram.dispatcher.filters.Command) -> None:
     """ Команда /help дает описание допустимых команд """
 
     logging.info("DEBUG_MESSAGE_FROM_HELP")
-    await message.answer("Допустимые команды: \n "
-                         "1) weather (CITY) \n "
-                         "2) /система \n "
-                         "3) /delete - удаляет последнее сообщение \n"
-                         "4) /__all_users \n"
-                         "5) /stop \n"
-                         "6) /reg - регистрация пользователя \n"
-                         "7) /alert \n"
-                         "8) /postgres - тест запрос к БД")
+    await message.answer(get_primary_database_ip())
+    #                     "1) weather (CITY) \n "
+    #                     "2) /система \n "
+    #                     "3) /delete - удаляет последнее сообщение \n"
+    #                     "4) /__all_users \n"
+    #                     "5) /stop \n"
+    #                     "6) /reg - регистрация пользователя \n"
+    #                     "7) /alert \n"
+    #                     "8) /postgres - тест запрос к БД")
 
 
 async def send_alert_message(message: aiogram.dispatcher.filters.Command) -> None:
@@ -287,7 +278,7 @@ async def registrating_user_for_tg_bot(message: aiogram.types.Message) -> None:
 async def get_text_messages(message: aiogram.types.Message) -> None:
     """ ОБРАБОТЧИК СООБЩЕНИЙ """
 
-    if message.text.lower() == '/система':
+    if message.text.lower() == '/system':
         sysinfo = SysInfo()
         await message.answer(str(sysinfo))
     elif message.text.lower() == '/delete':
@@ -332,9 +323,38 @@ def get_weather(where: aiogram.types.Message) -> str:
 def get_primary_database_ip() -> str:
     """ Возвращает IP текущего боевого сервера БД """
 
+    logging.debug(f"DEBUG_MESSAGE_FROM_get_primary_database_ip")
+    connection = connect_postgres('192.168.56.114')
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('select pg_is_in_recovery();')
+            if cursor == 't':
+                logging.warning("Master ip is 192.168.56.113")
+                return '192.168.56.113'
+            elif cursor == 'f':
+                try:
+                    connection_check_replication = connect_postgres('192.168.56.113')
+                    with connection_check_replication.cursor() as cursor_check_replication:
+                        cursor_check_replication.execute('select pg_is_in_recovery();')
+                        if cursor_check_replication == 'f':
+                            logging.critical("REPLICATION FAIL, CHECK DATABASE")
+                            # При ошибке репликации, выбираем 192.168.56.113 как наиболее вероятный мастер
+                            return "192.168.56.113"
+                        else:
+                            logging.warning("Master ip is 192.168.56.114")
+                            return '192.168.56.114'
+                except Exception as connection_check_replication_postgresdb_exception:
+                    logging.critical(f"Exception {connection_check_replication_postgresdb_exception} CRITICAL, CHECK DATABASE postgresdb")
+                    # Если срабатывает exception, вероятно БД 192.168.56.113 плохо либо она недоступна, в таком случае мастером считаем 192.168.56.114
+                    return '192.168.56.114'
+    except Exception as get_primary_database_ip_exception:
+        logging.error(f"Exception {get_primary_database_ip_exception} at get_primary_database_ip()")
+        return "none"
+
 
 def connect_postgres(ip: str):
     """ Коннект к БД, возвращает обьект connection """
+
     DBNAME = 'postgres'
     HOST = ip
     logging.debug(f"DEBUG MESSAGE FROM CONNECT_POSTGRES TO HOST {ip}")
